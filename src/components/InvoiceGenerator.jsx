@@ -1079,6 +1079,7 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
               setItems(prev => prev.map(item => ({ ...item, taxPercent: 0, cessPercent: 0 })));
             }
           }
+        }
         // v1.10.10 — read per-type prefix override from print settings.
         const _psForPrefix = getPrintSettings();
         const rawOverride = _psForPrefix.customPrefixes?.[type];
