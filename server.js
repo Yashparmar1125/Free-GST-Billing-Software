@@ -25,10 +25,10 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 // by any common software we could find. The persisted `data/port.txt` always
 // wins over this default — so a single user who genuinely needs 47371 for
 // something else can edit that file and we'll respect it forever.
-// In containerized/Docker environments, PORT & HOST can be configured via environment variables.
+// In containerized/Docker or cloud (Render/Railway) environments, PORT & HOST can be configured via environment variables.
 const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 47371;
 const PORT_FILE = path.join(DATA_DIR, 'port.txt');
-const BIND_HOST = process.env.HOST || '127.0.0.1';
+const BIND_HOST = process.env.HOST || (process.env.PORT || process.env.RENDER ? '0.0.0.0' : '127.0.0.1');
 
 // Read the persisted port (if any) — written once on first successful start
 // and every time we get bumped off our preferred port by EADDRINUSE.
@@ -41,27 +41,32 @@ const persistedPort = (() => {
   } catch { return null; }
 })();
 const STARTING_PORT = persistedPort || DEFAULT_PORT;
-const MAX_PORT_SCAN = 50; // 47371 → 47420 is enough headroom for any conceivable collision
+const MAX_PORT_SCAN = process.env.PORT ? 0 : 50; // In cloud hosting (Render), never drift away from assigned PORT
 
 const app = express();
 
-// v1.10.0 — CORS lockdown. Previously `app.use(cors())` echoed
-// Access-Control-Allow-Origin: *, which meant any site the user visited
-// could `fetch('http://localhost:47371/api/bills')` and read/wipe all
-// data. This is a local desktop-style app: legitimate callers either
-// have no Origin header (same-page fetch from our own served HTML,
-// browsers' XHR to localhost from about:blank tools, curl) or an
-// Origin pointing at http://localhost:<port>. Everything else is
+// v1.10.0 — CORS lockdown (audit H3).
+//
+// Desktop-first security model: the Express server is only meant to be
+// called by our own Vite frontend. Binding to 127.0.0.1 prevents incoming
+// LAN connections, but ANY web page open in the user's browser can still
+// issue fetch('http://localhost:47371/api/bills') — which the browser
+// tags with `Origin: https://evil.example.com`.
+//
+// Without this middleware the request would succeed and return real invoice
+// data to the attacker. With this middleware, foreign origins are 403-
 // rejected. The Vite dev server proxies /api → us so its origin is
 // also localhost.
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   const customOrigin = process.env.ALLOWED_ORIGINS;
+  const isCloudHost = Boolean(process.env.PORT || process.env.RENDER || process.env.RAILWAY_ENVIRONMENT);
   const allow =
     !origin ||
     /^https?:\/\/localhost(:\d+)?$/i.test(origin) ||
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/i.test(origin) ||
     /^https?:\/\/\[::1\](:\d+)?$/i.test(origin) ||
+    isCloudHost ||
     (customOrigin && (customOrigin === '*' || new RegExp(customOrigin, 'i').test(origin)));
   if (!allow) {
     return res.status(403).json({ error: 'Cross-origin request refused' });
@@ -1386,6 +1391,11 @@ function startServer(port) {
       console.log(`  Port ${port} is busy, trying ${port + 1}...`);
       startServer(port + 1);
     } else if (err.code === 'EADDRINUSE') {
+      if (process.env.PORT) {
+        console.error(`  PORT ${port} is already in use. Cannot bind to cloud-assigned port.`);
+        logFatal(err, 'startup');
+        process.exit(1);
+      }
       // We've exhausted the scan range. Tell the OS to pick anything free — at
       // this point the user has 50+ apps fighting for the 47371-47421 range,
       // which we treat as "do whatever works" rather than failing to start.
