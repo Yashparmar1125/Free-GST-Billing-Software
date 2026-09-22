@@ -428,6 +428,13 @@ export const INVOICE_TYPES = {
     showGST: true,
     description: 'Standard GST tax invoice',
   },
+  'non-gst': {
+    label: 'No GST Bill',
+    prefix: 'BILL',
+    title: 'INVOICE',
+    showGST: false,
+    description: 'Standard bill or invoice with no GST / tax calculations and no GST tags',
+  },
   'proforma': {
     label: 'Proforma / Estimate',
     prefix: 'EST',

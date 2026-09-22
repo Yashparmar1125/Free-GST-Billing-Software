@@ -167,6 +167,28 @@ const DEFAULT_OPTIONS = {
   autoApplyClientCredit: false,
 };
 
+// Keys inside invoiceOptions that are transaction-specific per-bill values,
+// NOT user display preferences. These must NEVER be saved to or inherited from
+// global display options (localStorage 'freegstbill_invoiceOptions' or server options).
+const PER_BILL_OPTION_KEYS = [
+  'paymentAccountSnapshot',
+  'invoiceDiscountValue',
+  'invoiceDiscountType',
+  'exchangeRate',
+  'recurring',
+  'tdsCumulativeThisYear',
+  'tcsCumulativeThisYear',
+];
+
+function sanitizeDisplayOptions(opts) {
+  if (!opts || typeof opts !== 'object') return {};
+  const cleaned = { ...opts };
+  for (const k of PER_BILL_OPTION_KEYS) {
+    delete cleaned[k];
+  }
+  return cleaned;
+}
+
 const ACCENT_PRESETS = [
   { color: '#1e40af', label: 'Blue' },
   { color: '#7c3aed', label: 'Purple' },
@@ -604,13 +626,13 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
     try {
       const saved = localStorage.getItem('freegstbill_invoiceOptions');
       const persisted = saved ? JSON.parse(saved) : {};
-      // v1.10.20 — paymentAccountSnapshot is per-bill data (frozen bank
-      // details at time of save). It must NEVER be inherited via the
-      // user-preference stores (localStorage / server). Strip on read so
-      // opening Invoice B doesn't pick up Invoice A's snapshot.
-      delete persisted.paymentAccountSnapshot;
+      const cleaned = sanitizeDisplayOptions(persisted);
+      // Clean up legacy contaminated per-bill data (like invoiceDiscountValue) from localStorage immediately
+      if (saved && Object.keys(persisted).some(k => PER_BILL_OPTION_KEYS.includes(k))) {
+        try { localStorage.setItem('freegstbill_invoiceOptions', JSON.stringify(cleaned)); } catch { /* ignore */ }
+      }
       // Persisted options are the user's defaults, draft can override for in-progress work
-      return { ...DEFAULT_OPTIONS, ...persisted, ...(draft?.invoiceOptions || {}) };
+      return { ...DEFAULT_OPTIONS, ...cleaned, ...(draft?.invoiceOptions || {}) };
     } catch { return draft?.invoiceOptions || { ...DEFAULT_OPTIONS }; }
   });
   const [showOptions, setShowOptions] = useState(false);
@@ -721,13 +743,10 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
   // request.
   const optionsPersistTimer = useRef(null);
   useEffect(() => {
-    // v1.10.20 — Strip paymentAccountSnapshot before persisting. It's per-
-    // bill data (bank details frozen at save time), not a user preference.
-    // Prior code auto-persisted the entire invoiceOptions to localStorage
-    // AND to the server, so opening Invoice A (Bank X snapshot) polluted
-    // both stores, and opening Invoice B inherited Bank X — defeating the
-    // v1.10.19 backfill entirely.
-    const { paymentAccountSnapshot: _snap, ...persistable } = invoiceOptions;
+    // Strip transaction-specific per-bill data (bank snapshot, whole-bill discount,
+    // recurring schedules, exchange rate) before persisting. It must NEVER pollute
+    // global user display preferences.
+    const persistable = sanitizeDisplayOptions(invoiceOptions);
     localStorage.setItem('freegstbill_invoiceOptions', JSON.stringify(persistable));
     if (hasInitialized.current) {
       clearTimeout(optionsPersistTimer.current);
@@ -742,18 +761,23 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
   useEffect(() => {
     getInvoiceDisplayOptions().then(serverOpts => {
       if (serverOpts) {
-        // v1.10.20 — Strip cross-invoice bleed-through of paymentAccountSnapshot
-        // from any stale server-persisted options (pre-v1.10.20 clients would
-        // have posted it). Preserves the current bill's snapshot in `prev`.
-        delete serverOpts.paymentAccountSnapshot;
-        const merged = { ...DEFAULT_OPTIONS, ...serverOpts };
+        // Strip cross-invoice bleed-through of per-bill data (paymentAccountSnapshot,
+        // invoiceDiscountValue, etc.) from any stale server-persisted options.
+        const cleanedServerOpts = sanitizeDisplayOptions(serverOpts);
+        const merged = { ...DEFAULT_OPTIONS, ...cleanedServerOpts };
         setInvoiceOptions(prev => {
           // Only update if different to avoid unnecessary re-renders
           const changed = Object.keys(merged).some(k => merged[k] !== prev[k]);
           if (changed) {
-            // Preserve the per-bill snapshot from prev when applying server defaults.
-            const nextOpts = { ...merged, paymentAccountSnapshot: prev.paymentAccountSnapshot };
-            const { paymentAccountSnapshot: _skip, ...toPersist } = nextOpts;
+            // Preserve the per-bill fields from prev when applying server defaults.
+            const nextOpts = {
+              ...merged,
+              paymentAccountSnapshot: prev.paymentAccountSnapshot,
+              invoiceDiscountValue: prev.invoiceDiscountValue,
+              invoiceDiscountType: prev.invoiceDiscountType,
+              exchangeRate: prev.exchangeRate,
+            };
+            const toPersist = sanitizeDisplayOptions(nextOpts);
             localStorage.setItem('freegstbill_invoiceOptions', JSON.stringify(toPersist));
             return nextOpts;
           }
@@ -1011,8 +1035,7 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
         let mergedOpts = null;
         try {
           const saved = localStorage.getItem('freegstbill_invoiceOptions');
-          const persisted = saved ? JSON.parse(saved) : {};
-          delete persisted.paymentAccountSnapshot;
+          const persisted = saved ? sanitizeDisplayOptions(JSON.parse(saved)) : {};
           mergedOpts = { ...DEFAULT_OPTIONS, ...persisted, ...d.invoiceOptions };
         } catch { mergedOpts = { ...DEFAULT_OPTIONS, ...d.invoiceOptions }; }
         // Backfilling only happens if the bill genuinely has no snapshot.
@@ -1044,8 +1067,18 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
         if (convertType) {
           setInvoiceType(convertType);
           const config = INVOICE_TYPES[convertType];
-          if (config) setInvoiceOptions(prev => ({ ...prev, showGST: config.showGST, showPlaceOfSupply: config.showGST }));
-        }
+          if (config) {
+            setInvoiceOptions(prev => ({
+              ...prev,
+              showGST: config.showGST,
+              showPlaceOfSupply: config.showGST,
+              showGSTIN: config.showGST,
+              showHSN: config.showGST,
+            }));
+            if (!config.showGST) {
+              setItems(prev => prev.map(item => ({ ...item, taxPercent: 0, cessPercent: 0 })));
+            }
+          }
         // v1.10.10 — read per-type prefix override from print settings.
         const _psForPrefix = getPrintSettings();
         const rawOverride = _psForPrefix.customPrefixes?.[type];
@@ -1139,10 +1172,24 @@ export default function InvoiceGenerator({ onBack, profile: profileProp, editing
     setDetails(prev => ({ ...prev, invoiceNumber: num }));
 
     // Auto-set options based on type
-    if (type === 'bill-of-supply') {
-      setInvoiceOptions(prev => ({ ...prev, showGST: false, showPlaceOfSupply: false }));
+    if (type === 'bill-of-supply' || type === 'non-gst') {
+      setInvoiceOptions(prev => ({
+        ...prev,
+        showGST: false,
+        showPlaceOfSupply: false,
+        showGSTIN: false,
+        showHSN: false,
+        showCess: false,
+      }));
+      setItems(prev => prev.map(item => ({ ...item, taxPercent: 0, cessPercent: 0 })));
     } else {
-      setInvoiceOptions(prev => ({ ...prev, showGST: config.showGST, showPlaceOfSupply: config.showGST }));
+      setInvoiceOptions(prev => ({
+        ...prev,
+        showGST: config.showGST,
+        showPlaceOfSupply: config.showGST,
+        showGSTIN: config.showGST,
+        showHSN: config.showGST,
+      }));
     }
   };
 

@@ -56,9 +56,9 @@ const InvoicePreview = React.forwardRef(({ profile, client, details, items, tota
   const opt = (key, fallback = true) => options[key] !== undefined ? options[key] : fallback;
   const showGST = opt('showGST', typeConfig.showGST);
   const showState = opt('showState');
-  const showGSTIN = opt('showGSTIN');
+  const showGSTIN = opt('showGSTIN', showGST);
   const showPlaceOfSupply = opt('showPlaceOfSupply', showGST);
-  const showHSN = opt('showHSN');
+  const showHSN = opt('showHSN', showGST);
   const showDiscount = opt('showDiscount');
   const showBankDetails = opt('showBankDetails');
   const showUPI = opt('showUPI');
@@ -152,6 +152,7 @@ const InvoicePreview = React.forwardRef(({ profile, client, details, items, tota
 
   const accentColors = {
     'tax-invoice': '#1e40af',
+    'non-gst': '#2563eb',
     'proforma': '#7c3aed',
     'bill-of-supply': '#0f766e',
     'credit-note': '#be123c',
